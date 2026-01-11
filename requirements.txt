@@ -11,3 +11,5 @@ imageio-ffmpeg==0.4.9
 librosa
 scikit-learn
 matplotlib
+streamlit-webrtc
+av
