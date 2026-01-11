@@ -40,18 +40,44 @@ EMOTIONS = [
     "Happy", "Sad", "Angry", "Neutral"
 ]
 
-# ✅ STUN CONFIG (FIXES WEBRTC CONNECTION ISSUE)
-RTC_CONFIGURATION = RTCConfiguration(
-    {
-        "iceServers": [
-            {"urls": ["stun:stun.l.google.com:19302"]},
-            {"urls": ["stun:stun1.l.google.com:19302"]},
-            {"urls": ["stun:stun2.l.google.com:19302"]},
-            {"urls": ["stun:stun3.l.google.com:19302"]},
-            {"urls": ["stun:stun4.l.google.com:19302"]},
-        ]
-    }
-)
+# =========================
+# RTC CONFIG (STUN + TURN)
+# =========================
+def get_rtc_configuration():
+    # STUN: free direct connect
+    stun_servers = [
+        "stun:stun.l.google.com:19302",
+        "stun:stun1.l.google.com:19302",
+        "stun:stun2.l.google.com:19302",
+        "stun:stun3.l.google.com:19302",
+        "stun:stun4.l.google.com:19302",
+    ]
+
+    ice_servers = [{"urls": stun_servers}]
+
+    # TURN: relay (fixes strict WiFi / college networks)
+    # NOTE: TURN creds must be set in Streamlit secrets
+    try:
+        turn_url = st.secrets["TURN_URL"]
+        turn_username = st.secrets["TURN_USERNAME"]
+        turn_password = st.secrets["TURN_PASSWORD"]
+
+        ice_servers.append(
+            {
+                "urls": [turn_url],
+                "username": turn_username,
+                "credential": turn_password,
+            }
+        )
+        st.sidebar.success("✅ TURN enabled (best connectivity)")
+    except Exception:
+        st.sidebar.warning("⚠ TURN not configured, using only STUN")
+
+    return RTCConfiguration({"iceServers": ice_servers})
+
+
+RTC_CONFIGURATION = get_rtc_configuration()
+
 
 # =========================
 # SIDEBAR
@@ -76,6 +102,7 @@ def load_face_model():
     model.to(DEVICE)
     model.eval()
     return model
+
 
 face_model = load_face_model()
 
@@ -112,6 +139,7 @@ def predict_face_emotion(face_img):
 
     return EMOTIONS[idx], probs[0][idx].item()
 
+
 # =========================
 # HEADER
 # =========================
@@ -121,12 +149,14 @@ st.markdown("---")
 
 
 # ============================================================
-# ✅ WEBCAM MODE USING WEBRTC (WORKS ON STREAMLIT CLOUD)
+# WEBCAM MODE (WebRTC)
 # ============================================================
 class EmotionVideoTransformer(VideoTransformerBase):
     def __init__(self):
         self.frame_count = 0
         self.last_faces = 0
+        self.last_emotion = "None"
+        self.last_conf = 0.0
 
     def transform(self, frame):
         img = frame.to_ndarray(format="bgr24")
@@ -139,6 +169,9 @@ class EmotionVideoTransformer(VideoTransformerBase):
         for (x, y, w, h) in faces:
             face = img[y:y + h, x:x + w]
             emotion, conf = predict_face_emotion(face)
+
+            self.last_emotion = emotion
+            self.last_conf = conf
 
             cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
             cv2.putText(
@@ -160,9 +193,8 @@ class EmotionVideoTransformer(VideoTransformerBase):
 if mode == "Webcam (Face Only)":
 
     st.warning("🎥 Webcam mode analyzes **facial emotion only** (no audio).")
-    st.info("✅ Allow camera permission in browser. Works on Streamlit Cloud using WebRTC.")
+    st.info("✅ Allow camera permission in browser. TURN is needed if your WiFi blocks WebRTC.")
 
-    frame_placeholder = st.empty()
     stats_placeholder = st.empty()
 
     ctx = webrtc_streamer(
@@ -178,7 +210,9 @@ if mode == "Webcam (Face Only)":
         stats_placeholder.markdown(
             f"""
             **Frames Processed:** {ctx.video_transformer.frame_count}  
-            **Faces Detected:** {ctx.video_transformer.last_faces}
+            **Faces Detected:** {ctx.video_transformer.last_faces}  
+            **Last Emotion:** {ctx.video_transformer.last_emotion}  
+            **Confidence:** {ctx.video_transformer.last_conf:.2f}
             """
         )
 
@@ -194,10 +228,10 @@ if mode == "Upload Video (Face + Voice)":
     )
 
     if video_file:
-        # ✅ show preview
+        # ✅ show preview on Streamlit
         st.video(video_file)
 
-        # ✅ safe temp path
+        # ✅ safe temp path for Streamlit Cloud
         temp_dir = tempfile.gettempdir()
         temp_video_path = os.path.join(temp_dir, "temp_video.mp4")
 
@@ -208,7 +242,7 @@ if mode == "Upload Video (Face + Voice)":
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        # ✅ safety fixes for cloud codec cases
+        # ✅ handle codec problems (cloud)
         if fps is None or fps == 0:
             fps = 25.0
         if total_frames is None or total_frames <= 0:
