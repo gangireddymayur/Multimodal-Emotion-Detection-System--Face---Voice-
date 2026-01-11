@@ -5,8 +5,9 @@ opencv-python-headless
 torch
 torchvision
 Pillow
-moviepy
+moviepy==1.0.3
+imageio==2.34.1
+imageio-ffmpeg==0.4.9
 librosa
 scikit-learn
 matplotlib
-imageio[ffmpeg]
