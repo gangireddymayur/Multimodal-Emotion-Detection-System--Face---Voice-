@@ -5,6 +5,8 @@ import cv2
 import torch
 from torchvision import transforms
 from PIL import Image
+import os
+import tempfile
 
 from model import build_model
 from audio_utils import extract_audio
@@ -31,6 +33,19 @@ EMOTIONS = [
 ]
 
 # =========================
+# CLOUD DETECTION (Only for webcam fix)
+# =========================
+def is_streamlit_cloud():
+    # Streamlit Cloud sets some environment variables; this is safe detection
+    return (
+        os.environ.get("STREAMLIT_SHARING") == "true"
+        or "streamlit" in os.environ.get("HOSTNAME", "").lower()
+        or os.environ.get("HOME", "") == "/home/adminuser"
+    )
+
+IS_CLOUD = is_streamlit_cloud()
+
+# =========================
 # SIDEBAR
 # =========================
 st.sidebar.title("🎭 Emotion AI Dashboard")
@@ -54,7 +69,6 @@ def load_face_model():
     model.eval()
     return model
 
-
 face_model = load_face_model()
 
 # =========================
@@ -76,7 +90,6 @@ face_cascade = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
 
-
 # =========================
 # FACE EMOTION PREDICTION
 # =========================
@@ -90,7 +103,6 @@ def predict_face_emotion(face_img):
         idx = torch.argmax(probs, dim=1).item()
 
     return EMOTIONS[idx], probs[0][idx].item()
-
 
 # =========================
 # HEADER
@@ -107,6 +119,14 @@ if mode == "Webcam (Face Only)":
 
     st.warning("🎥 Webcam mode analyzes **facial emotion only** (no audio).")
 
+    # ✅ FIX: Webcam will never work on Streamlit Cloud server (no webcam device)
+    if IS_CLOUD:
+        st.error(
+            "❌ Webcam mode cannot work on Streamlit Cloud because the server has no webcam device.\n\n"
+            "✅ Run this project locally (PyCharm / terminal) to use webcam mode."
+        )
+        st.stop()
+
     run = st.checkbox("▶ Start Webcam")
     frame_placeholder = st.empty()
     stats_placeholder = st.empty()
@@ -117,6 +137,7 @@ if mode == "Webcam (Face Only)":
     while run:
         ret, frame = cap.read()
         if not ret:
+            st.error("❌ Cannot access webcam. Please check camera permissions / device.")
             break
 
         frame_count += 1
@@ -160,12 +181,25 @@ if mode == "Upload Video (Face + Voice)":
     )
 
     if video_file:
-        with open("temp_video.mp4", "wb") as f:
+        # ✅ FIX: show video preview (works on Streamlit Cloud)
+        st.video(video_file)
+
+        # ✅ FIX: Streamlit Cloud needs safe temp path
+        temp_dir = tempfile.gettempdir()
+        temp_video_path = os.path.join(temp_dir, "temp_video.mp4")
+
+        with open(temp_video_path, "wb") as f:
             f.write(video_file.read())
 
-        cap = cv2.VideoCapture("temp_video.mp4")
+        cap = cv2.VideoCapture(temp_video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # ✅ FIX: handle broken fps/frames on cloud codecs
+        if fps is None or fps == 0:
+            fps = 25.0
+        if total_frames is None or total_frames <= 0:
+            total_frames = 1
 
         st.success(f"📹 Video Loaded | FPS: {fps:.1f} | Frames: {total_frames}")
 
@@ -187,7 +221,7 @@ if mode == "Upload Video (Face + Voice)":
                 break
 
             frame_idx += 1
-            progress_bar.progress(int((frame_idx / total_frames) * 100))
+            progress_bar.progress(min(int((frame_idx / total_frames) * 100), 100))
             status_text.text(f"Processing frame {frame_idx}/{total_frames}")
 
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -253,7 +287,7 @@ if mode == "Upload Video (Face + Voice)":
             # VOICE EMOTION
             # =========================
             st.info("🎧 Analyzing voice emotion...")
-            audio_path = extract_audio("temp_video.mp4")
+            audio_path = extract_audio(temp_video_path)
             voice_emotion, voice_conf = predict_voice_emotion(audio_path)
 
             st.subheader("🎧 Voice Emotion Result")
@@ -278,4 +312,3 @@ if mode == "Upload Video (Face + Voice)":
                 result_df.to_csv(index=False),
                 "emotion_results.csv"
             )
-
