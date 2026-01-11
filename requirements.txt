@@ -1,7 +1,7 @@
 streamlit
 pandas
 numpy
-opencv-python
+opencv-python-headless
 torch
 torchvision
 Pillow
@@ -9,3 +9,4 @@ moviepy
 librosa
 scikit-learn
 matplotlib
+imageio[ffmpeg]
