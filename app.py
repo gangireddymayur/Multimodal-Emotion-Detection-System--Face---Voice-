@@ -8,6 +8,8 @@ from PIL import Image
 import os
 import tempfile
 
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
+
 from model import build_model
 from audio_utils import extract_audio
 from voice_emotion import predict_voice_emotion
@@ -31,19 +33,6 @@ EMOTIONS = [
     "Surprise", "Fear", "Disgust",
     "Happy", "Sad", "Angry", "Neutral"
 ]
-
-# =========================
-# CLOUD DETECTION (Only for webcam fix)
-# =========================
-def is_streamlit_cloud():
-    # Streamlit Cloud sets some environment variables; this is safe detection
-    return (
-        os.environ.get("STREAMLIT_SHARING") == "true"
-        or "streamlit" in os.environ.get("HOSTNAME", "").lower()
-        or os.environ.get("HOME", "") == "/home/adminuser"
-    )
-
-IS_CLOUD = is_streamlit_cloud()
 
 # =========================
 # SIDEBAR
@@ -109,48 +98,37 @@ def predict_face_emotion(face_img):
 # =========================
 st.title("🎭 Multimodal Emotion Detection System")
 st.caption("Facial Emotion Recognition + Voice Emotion Fusion")
-
 st.markdown("---")
 
-# =========================
-# WEBCAM MODE
-# =========================
-if mode == "Webcam (Face Only)":
 
-    st.warning("🎥 Webcam mode analyzes **facial emotion only** (no audio).")
+# ============================================================
+# ✅ WEBRTC VIDEO TRANSFORMER (ONLY FOR WEBCAM MODE)
+# ============================================================
+class EmotionVideoTransformer(VideoTransformerBase):
+    def __init__(self):
+        self.frame_count = 0
+        self.last_faces = 0
+        self.last_emotion = "None"
+        self.last_conf = 0.0
 
-    # ✅ FIX: Webcam will never work on Streamlit Cloud server (no webcam device)
-    if IS_CLOUD:
-        st.error(
-            "❌ Webcam mode cannot work on Streamlit Cloud because the server has no webcam device.\n\n"
-            "✅ Run this project locally (PyCharm / terminal) to use webcam mode."
-        )
-        st.stop()
+    def transform(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        self.frame_count += 1
 
-    run = st.checkbox("▶ Start Webcam")
-    frame_placeholder = st.empty()
-    stats_placeholder = st.empty()
-
-    cap = cv2.VideoCapture(0)
-    frame_count = 0
-
-    while run:
-        ret, frame = cap.read()
-        if not ret:
-            st.error("❌ Cannot access webcam. Please check camera permissions / device.")
-            break
-
-        frame_count += 1
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+        self.last_faces = len(faces)
 
         for (x, y, w, h) in faces:
-            face = frame[y:y + h, x:x + w]
+            face = img[y:y + h, x:x + w]
             emotion, conf = predict_face_emotion(face)
 
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            self.last_emotion = emotion
+            self.last_conf = conf
+
+            cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
             cv2.putText(
-                frame,
+                img,
                 f"{emotion} ({conf:.2f})",
                 (x, y - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
@@ -159,16 +137,42 @@ if mode == "Webcam (Face Only)":
                 2
             )
 
-        frame_placeholder.image(frame, channels="BGR")
+        return img
 
+
+# =========================
+# WEBCAM MODE (Face Only) ✅ FIXED USING streamlit-webrtc
+# =========================
+if mode == "Webcam (Face Only)":
+
+    st.warning("🎥 Webcam mode analyzes **facial emotion only** (no audio).")
+
+    st.info(
+        "✅ This webcam works on Streamlit Cloud using **browser webcam** (streamlit-webrtc). "
+        "Allow camera permission when browser asks."
+    )
+
+    ctx = webrtc_streamer(
+        key="emotion-webcam",
+        mode=WebRtcMode.SENDRECV,
+        video_transformer_factory=EmotionVideoTransformer,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+    )
+
+    # Show stats
+    stats_placeholder = st.empty()
+
+    if ctx.video_transformer:
         stats_placeholder.markdown(
             f"""
-            **Frames Processed:** {frame_count}  
-            **Faces Detected:** {len(faces)}
+            **Frames Processed:** {ctx.video_transformer.frame_count}  
+            **Faces Detected:** {ctx.video_transformer.last_faces}  
+            **Last Emotion:** {ctx.video_transformer.last_emotion}  
+            **Confidence:** {ctx.video_transformer.last_conf:.2f}
             """
         )
 
-    cap.release()
 
 # =========================
 # VIDEO UPLOAD MODE
@@ -181,10 +185,10 @@ if mode == "Upload Video (Face + Voice)":
     )
 
     if video_file:
-        # ✅ FIX: show video preview (works on Streamlit Cloud)
+        # ✅ show video preview
         st.video(video_file)
 
-        # ✅ FIX: Streamlit Cloud needs safe temp path
+        # ✅ safe temp path
         temp_dir = tempfile.gettempdir()
         temp_video_path = os.path.join(temp_dir, "temp_video.mp4")
 
@@ -195,7 +199,7 @@ if mode == "Upload Video (Face + Voice)":
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        # ✅ FIX: handle broken fps/frames on cloud codecs
+        # ✅ handle broken values on cloud
         if fps is None or fps == 0:
             fps = 25.0
         if total_frames is None or total_frames <= 0:
