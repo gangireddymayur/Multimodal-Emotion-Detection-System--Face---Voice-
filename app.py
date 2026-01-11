@@ -8,12 +8,18 @@ from PIL import Image
 import os
 import tempfile
 
-from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
+from streamlit_webrtc import (
+    webrtc_streamer,
+    VideoTransformerBase,
+    WebRtcMode,
+    RTCConfiguration,
+)
 
 from model import build_model
 from audio_utils import extract_audio
 from voice_emotion import predict_voice_emotion
 from fusion import fuse_emotions
+
 
 # =========================
 # PAGE CONFIG
@@ -33,6 +39,19 @@ EMOTIONS = [
     "Surprise", "Fear", "Disgust",
     "Happy", "Sad", "Angry", "Neutral"
 ]
+
+# ✅ STUN CONFIG (FIXES WEBRTC CONNECTION ISSUE)
+RTC_CONFIGURATION = RTCConfiguration(
+    {
+        "iceServers": [
+            {"urls": ["stun:stun.l.google.com:19302"]},
+            {"urls": ["stun:stun1.l.google.com:19302"]},
+            {"urls": ["stun:stun2.l.google.com:19302"]},
+            {"urls": ["stun:stun3.l.google.com:19302"]},
+            {"urls": ["stun:stun4.l.google.com:19302"]},
+        ]
+    }
+)
 
 # =========================
 # SIDEBAR
@@ -102,14 +121,12 @@ st.markdown("---")
 
 
 # ============================================================
-# ✅ WEBRTC VIDEO TRANSFORMER (ONLY FOR WEBCAM MODE)
+# ✅ WEBCAM MODE USING WEBRTC (WORKS ON STREAMLIT CLOUD)
 # ============================================================
 class EmotionVideoTransformer(VideoTransformerBase):
     def __init__(self):
         self.frame_count = 0
         self.last_faces = 0
-        self.last_emotion = "None"
-        self.last_conf = 0.0
 
     def transform(self, frame):
         img = frame.to_ndarray(format="bgr24")
@@ -122,9 +139,6 @@ class EmotionVideoTransformer(VideoTransformerBase):
         for (x, y, w, h) in faces:
             face = img[y:y + h, x:x + w]
             emotion, conf = predict_face_emotion(face)
-
-            self.last_emotion = emotion
-            self.last_conf = conf
 
             cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
             cv2.putText(
@@ -141,16 +155,15 @@ class EmotionVideoTransformer(VideoTransformerBase):
 
 
 # =========================
-# WEBCAM MODE (Face Only) ✅ FIXED USING streamlit-webrtc
+# WEBCAM MODE
 # =========================
 if mode == "Webcam (Face Only)":
 
     st.warning("🎥 Webcam mode analyzes **facial emotion only** (no audio).")
+    st.info("✅ Allow camera permission in browser. Works on Streamlit Cloud using WebRTC.")
 
-    st.info(
-        "✅ This webcam works on Streamlit Cloud using **browser webcam** (streamlit-webrtc). "
-        "Allow camera permission when browser asks."
-    )
+    frame_placeholder = st.empty()
+    stats_placeholder = st.empty()
 
     ctx = webrtc_streamer(
         key="emotion-webcam",
@@ -158,18 +171,14 @@ if mode == "Webcam (Face Only)":
         video_transformer_factory=EmotionVideoTransformer,
         media_stream_constraints={"video": True, "audio": False},
         async_processing=True,
+        rtc_configuration=RTC_CONFIGURATION,
     )
-
-    # Show stats
-    stats_placeholder = st.empty()
 
     if ctx.video_transformer:
         stats_placeholder.markdown(
             f"""
             **Frames Processed:** {ctx.video_transformer.frame_count}  
-            **Faces Detected:** {ctx.video_transformer.last_faces}  
-            **Last Emotion:** {ctx.video_transformer.last_emotion}  
-            **Confidence:** {ctx.video_transformer.last_conf:.2f}
+            **Faces Detected:** {ctx.video_transformer.last_faces}
             """
         )
 
@@ -185,7 +194,7 @@ if mode == "Upload Video (Face + Voice)":
     )
 
     if video_file:
-        # ✅ show video preview
+        # ✅ show preview
         st.video(video_file)
 
         # ✅ safe temp path
@@ -199,7 +208,7 @@ if mode == "Upload Video (Face + Voice)":
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        # ✅ handle broken values on cloud
+        # ✅ safety fixes for cloud codec cases
         if fps is None or fps == 0:
             fps = 25.0
         if total_frames is None or total_frames <= 0:
